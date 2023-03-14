@@ -1,0 +1,69 @@
+# region imports
+from AlgorithmImports import *
+# endregion
+import numpy as np
+import pandas as pd
+
+class ProfitProphet(QCAlgorithm):
+
+    stopMarketTicket = None
+    stopMarketFillTime = datetime.min
+    highestSPYPrice = 0
+
+    def Initialize(self):
+        self.SetStartDate(2010, 1, 1)  # Start date for backtest
+        self.SetEndDate(2022, 3, 14)  # End date for backtest
+        self.SetCash(100000)  # Set strategy cash
+        self.SetBrokerageModel(BrokerageName.InteractiveBrokersBrokerage, AccountType.Cash)
+
+        self.symbol = self.AddEquity("SPY", Resolution.Daily, dataNormalizationMode=DataNormalizationMode.Raw).Symbol  # Ticker symbol for S&P 500 ETF
+
+        self.fast_ma = self.SMA(self.symbol, 50, Resolution.Daily)  # 50-day moving average
+        self.slow_ma = self.SMA(self.symbol, 200, Resolution.Daily)  # 200-day moving average
+        self.rsi = self.RSI(self.symbol, 14, MovingAverageType.Simple, Resolution.Daily)  # RSI indicator
+
+        self.SetWarmUp(200)  # Warm up period for indicators
+
+    def OnData(self, data):
+        self.Plot("Data Chart", "Asset Price", self.Securities["SPY"].Close)
+
+        if (self.Time - self.stopMarketFillTime).days < 15:
+            return
+        if not (self.fast_ma.IsReady and self.slow_ma.IsReady and self.rsi.IsReady):
+            return
+
+        price = self.Securities[self.symbol].Price
+        holdings = self.Portfolio[self.symbol].Quantity
+
+        if self.Securities["SPY"].Close > self.highestSPYPrice:
+            # 1. Store the new high in highestSPYPrice
+            self.highestSPYPrice = self.Securities["SPY"].Close
+
+            # 2. Update the stop price to 90% of highestSPYPrice
+            if self.stopMarketTicket is not None:
+                updateFields = UpdateOrderFields()
+                updateFields.StopPrice = self.highestSPYPrice * 0.9
+                self.stopMarketTicket.Update(updateFields)
+
+            # 3. Print the new stop price with Debug()
+            self.Debug(f"New stop price: {self.highestSPYPrice * 0.9}")
+
+        if self.fast_ma.Current.Value > self.slow_ma.Current.Value and self.rsi.Current.Value < 50:
+            # Buy signal
+            self.MarketOrder(self.symbol, 200)
+        elif self.fast_ma.Current.Value < self.slow_ma.Current.Value or self.rsi.Current.Value > 70:
+            # Sell signal
+            self.Liquidate(self.symbol)
+
+        # Trailing Stop loss
+        if holdings < 0:
+            self.stopMarketTicket = None
+        elif holdings > 0 and self.stopMarketTicket is None:
+            self.stopMarketTicket = self.StopMarketOrder("SPY", -200, 0.9 * self.Securities["SPY"].Close)
+
+        if self.stopMarketTicket is not None:
+            updateFields = UpdateOrderFields()
+            updateFields.StopPrice = max(self.highestSPYPrice * 0.9, self.stopMarketTicket.Get(OrderField.StopPrice))
+            self.stopMarketTicket.Update(updateFields)
+
+        self.Plot("Data Chart", "Stop Price", self.highestSPYPrice)
