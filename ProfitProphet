@@ -6,18 +6,20 @@ import pandas as pd
 
 class ProfitProphet(QCAlgorithm):
 
-    stopMarketTicket = None
-    stopMarketFillTime = datetime.min
-    highestSPYPrice = 0
+    stopMarketTicket = None # Track stop market order
+    stopMarketFillTime = datetime.min # Time of stop market fill
+    highestSPYPrice = 0 # Highest SPY price since algorithm started running
 
     def Initialize(self):
-        self.SetStartDate(2010, 1, 1)  # Start date for backtest
+        self.SetStartDate(2000, 1, 1)  # Start date for backtest
         self.SetEndDate(2022, 3, 14)  # End date for backtest
         self.SetCash(100000)  # Set strategy cash
         self.SetBrokerageModel(BrokerageName.InteractiveBrokersBrokerage, AccountType.Cash)
 
-        self.symbol = self.AddEquity("SPY", Resolution.Daily, dataNormalizationMode=DataNormalizationMode.Raw).Symbol  # Ticker symbol for S&P 500 ETF
+        # Add S&P 500 ETF as equity
+        self.symbol = self.AddEquity("SPY", Resolution.Daily, dataNormalizationMode=DataNormalizationMode.Raw).Symbol
 
+        # Set up technical indicators
         self.fast_ma = self.SMA(self.symbol, 50, Resolution.Daily)  # 50-day moving average
         self.slow_ma = self.SMA(self.symbol, 200, Resolution.Daily)  # 200-day moving average
         self.rsi = self.RSI(self.symbol, 14, MovingAverageType.Simple, Resolution.Daily)  # RSI indicator
@@ -25,29 +27,34 @@ class ProfitProphet(QCAlgorithm):
         self.SetWarmUp(200)  # Warm up period for indicators
 
     def OnData(self, data):
+        # Plot asset price and stop price on "Data Chart"
         self.Plot("Data Chart", "Asset Price", self.Securities["SPY"].Close)
+        self.Plot("Data Chart", "Stop Price", self.highestSPYPrice)
 
+        # Wait for stop market order to fill before continuing
         if (self.Time - self.stopMarketFillTime).days < 15:
             return
+
+        # Wait for technical indicators to be ready before trading
         if not (self.fast_ma.IsReady and self.slow_ma.IsReady and self.rsi.IsReady):
             return
 
         price = self.Securities[self.symbol].Price
         holdings = self.Portfolio[self.symbol].Quantity
 
+        # Update stop market order if SPY price hits new high
         if self.Securities["SPY"].Close > self.highestSPYPrice:
-            # 1. Store the new high in highestSPYPrice
             self.highestSPYPrice = self.Securities["SPY"].Close
 
-            # 2. Update the stop price to 90% of highestSPYPrice
+            # Update stop market order if it exists
             if self.stopMarketTicket is not None:
                 updateFields = UpdateOrderFields()
                 updateFields.StopPrice = self.highestSPYPrice * 0.9
                 self.stopMarketTicket.Update(updateFields)
 
-            # 3. Print the new stop price with Debug()
             self.Debug(f"New stop price: {self.highestSPYPrice * 0.9}")
 
+        # Buy or sell based on technical indicators
         if self.fast_ma.Current.Value > self.slow_ma.Current.Value and self.rsi.Current.Value < 50:
             # Buy signal
             self.MarketOrder(self.symbol, 200)
@@ -55,15 +62,16 @@ class ProfitProphet(QCAlgorithm):
             # Sell signal
             self.Liquidate(self.symbol)
 
-        # Trailing Stop loss
+        # Trailing stop loss
         if holdings < 0:
+            # Short position - cancel stop market order
             self.stopMarketTicket = None
         elif holdings > 0 and self.stopMarketTicket is None:
+        # Set the stop price to 90% of the current asset price
             self.stopMarketTicket = self.StopMarketOrder("SPY", -200, 0.9 * self.Securities["SPY"].Close)
 
+    # If there is a stop market order, update the stop price to the higher of the previous stop price and 90% of the current asset price
         if self.stopMarketTicket is not None:
             updateFields = UpdateOrderFields()
             updateFields.StopPrice = max(self.highestSPYPrice * 0.9, self.stopMarketTicket.Get(OrderField.StopPrice))
             self.stopMarketTicket.Update(updateFields)
-
-        self.Plot("Data Chart", "Stop Price", self.highestSPYPrice)
